@@ -1402,31 +1402,32 @@ async function proveShellReady(
       error(operation, `pane ${paneId} shell readiness deadline exhausted`);
     return remaining;
   };
-  const marker = `__PI_HERDSMAN_READY_${randomUUID()}__`;
-  await runHerdr(pi, ctx, ["pane", "run", paneId, `echo ${marker}`], {
-    signal,
-    timeout: timeout(),
-    noResult: true,
-  });
-  const waitTimeout = timeout();
-  await runHerdr(
-    pi,
-    ctx,
-    [
-      "pane",
-      "wait-output",
-      paneId,
-      "--regex",
-      `^${marker}$`,
-      "--timeout",
-      String(waitTimeout),
-    ],
-    {
-      signal,
-      timeout: waitTimeout,
-      noResult: true,
-    },
-  );
+  // A login shell can discard typeahead while initializing. Retry only a harmless
+  // probe, only after a structured wait timeout and an available shell proof.
+  let retryOwner = expected;
+  for (let attempt = 0; ; attempt++) {
+    const marker = `__PI_HERDSMAN_READY_${randomUUID()}__`;
+    await runHerdr(pi, ctx, ["pane", "run", paneId, `echo ${marker}`], {
+      signal, timeout: timeout(), noResult: true,
+    });
+    const waitTimeout = Math.min(timeout(), 2_000);
+    try {
+      await runHerdr(pi, ctx, ["pane", "wait-output", paneId, "--regex",
+        `^${marker}$`, "--timeout", String(waitTimeout)], {
+        signal, timeout: Math.min(timeout(), waitTimeout + 1_000), noResult: true,
+      });
+      break;
+    } catch (failure) {
+      if (operation !== "start" || attempt >= 5 || signal?.aborted ||
+          !(failure instanceof OperationError) ||
+          failure.detail.details?.herdrCode !== "timeout") throw failure;
+      const observed = await runHerdr(pi, ctx,
+        ["pane", "process-info", "--pane", paneId], { signal, timeout: timeout() });
+      const owner = normalizePaneProcess(observed?.process_info, paneId, true);
+      if (!owner || !sameShellProcessOwner(retryOwner ?? owner, owner)) throw failure;
+      retryOwner = owner;
+    }
+  }
   const result = await runHerdr(
     pi,
     ctx,
@@ -1435,7 +1436,7 @@ async function proveShellReady(
   );
   const value = result?.process_info;
   const shell = normalizePaneProcess(value, paneId, true);
-  if (!shell || !sameShellProcessOwner(expected ?? shell, shell))
+  if (!shell || !sameShellProcessOwner(retryOwner ?? shell, shell))
     error(operation, `pane ${paneId} did not become an available shell`);
   return shell;
 }

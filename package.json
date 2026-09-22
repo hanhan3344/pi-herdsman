@@ -1,17 +1,17 @@
 {
   "name": "pi-herdsman",
-  "version": "0.12.1",
+  "version": "0.12.1-hanhan.1",
   "type": "module",
   "description": "Asynchronous Pi subagents and agent fleet orchestration with nested delegation, parallel execution, and supervision in herdr.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/boadij/pi-herdsman.git"
+    "url": "git+https://github.com/hanhan3344/pi-herdsman.git"
   },
   "bugs": {
-    "url": "https://github.com/boadij/pi-herdsman/issues"
+    "url": "https://github.com/hanhan3344/pi-herdsman/issues"
   },
-  "homepage": "https://github.com/boadij/pi-herdsman#readme",
+  "homepage": "https://github.com/hanhan3344/pi-herdsman#readme",
   "keywords": [
     "pi-package",
     "pi",

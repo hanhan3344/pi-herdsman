@@ -3963,3 +3963,123 @@ test("shell ownership uses captured identity without a shell allowlist", () => {
     false,
   );
 });
+
+test("discarded startup typeahead retries probe but starts agent only once", async () => {
+  const environment = globalThis.process.env;
+  const previousWorkspace = environment.HERDR_WORKSPACE_ID;
+  const workspaceId = "workspace-fresh";
+  const tabId = "tab-fresh";
+  const paneId = "pane-fresh";
+  const cwd = "/tmp/fresh-agent";
+  environment.HERDR_WORKSPACE_ID = workspaceId;
+  const calls: string[][] = [];
+  let paneLists = 0;
+  let probeWaits = 0;
+  let processInfoCalls = 0;
+  let agentStartAt = 0;
+  const beganAt = Date.now();
+  const response = (value: unknown) => ({
+    code: 0,
+    stdout: JSON.stringify({ id: 1, result: value }),
+    stderr: "",
+  });
+  const processInfo = {
+    pane_id: paneId,
+    shell_pid: 12,
+    foreground_processes: [{ pid: 12, argv0: "/bin/zsh" }],
+  };
+  const pi = {
+    exec: async (_command: string, args: string[]) => {
+      calls.push(args);
+      const key = args.slice(0, 2).join(" ");
+      if (key === "tab list") return response({ tabs: [] });
+      if (key === "tab create")
+        return response({
+          tab: { tab_id: tabId, label: "agents", workspace_id: workspaceId },
+          root_pane: { pane_id: paneId },
+        });
+      if (key === "pane list") {
+        paneLists++;
+        const ready = true;
+        return response({
+          panes: [
+            {
+              pane_id: paneId,
+              workspace_id: workspaceId,
+              tab_id: tabId,
+              agent_status: ready ? "unknown" : "working",
+              cwd,
+              ...(ready ? {} : { agent: "shell-starting" }),
+              foreground_cwd: cwd,
+            },
+          ],
+        });
+      }
+      if (key === "pane process-info") {
+        processInfoCalls++;
+        return response({
+          process_info: processInfo,
+        });
+      }
+      if (key === "pane run") return response({});
+      if (key === "pane wait-output") {
+        if (++probeWaits === 1) return { code: 1, stdout: "", stderr: JSON.stringify({id:1,error:{code:"timeout",message:"timed out waiting for output match"}}) };
+        const run = calls.findLast(
+          (item) => item[0] === "pane" && item[1] === "run",
+        )!;
+        const marker = String(run[3]).match(
+          /(__PI_HERDSMAN_READY_[0-9a-f-]{36}__)$/,
+        )![1];
+        assert.equal(args[args.indexOf("--regex") + 1], `^${marker}$`);
+        return response({});
+      }
+      if (key === "agent start") {
+        agentStartAt = Date.now();
+        return response({
+          agent: {
+            name: "agent-run",
+            agent_session: {
+              source: "herdr:pi",
+              agent: "pi",
+              kind: "id",
+              value: "session-id",
+            },
+          },
+        });
+      }
+      throw new Error("unexpected Herdr call: " + args.join(" "));
+    },
+  } as any;
+
+  try {
+    await startHerdrAgent(pi, { cwd } as any, {
+      label: "agent",
+      runId: "run-id",
+      cwd,
+      placement: { kind: "tab", label: "agents" },
+      env: ["PI_HERDSMAN_MAILBOX=/tmp/mailbox"],
+    });
+  } finally {
+    if (previousWorkspace === undefined) delete environment.HERDR_WORKSPACE_ID;
+    else environment.HERDR_WORKSPACE_ID = previousWorkspace;
+  }
+
+  const paneListCalls = calls
+    .map((args, index) =>
+      args[0] === "pane" && args[1] === "list" ? index : -1,
+    )
+    .filter((index) => index >= 0);
+  const start = calls.findIndex(
+    (args) => args[0] === "agent" && args[1] === "start",
+  );
+  assert.ok(paneLists >= 1);
+  assert.equal(
+    calls.some((args) => args[0] === "tab" && args[1] === "list"),
+    false,
+  );
+  assert.equal(processInfoCalls, 3);
+  assert.equal(probeWaits, 2);
+  assert.equal(calls.filter(x => x[0] === "agent" && x[1] === "start").length, 1);
+  assert.ok(start > paneListCalls[0]!);
+  assert.ok(agentStartAt >= beganAt);
+});
